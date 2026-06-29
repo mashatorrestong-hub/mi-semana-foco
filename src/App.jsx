@@ -1,574 +1,732 @@
 import { useState, useEffect } from "react";
 
-const COLORS = {
-  bg: "#0F1117", surface: "#181C27", surfaceHigh: "#1F2535",
-  border: "#2A3049", amber: "#F5A623", amberDim: "#7A5010",
-  teal: "#38BDF8", tealDim: "#0C3D56", green: "#4ADE80",
-  red: "#F87171", muted: "#5A6480", text: "#E8EBF4", textSoft: "#9099B5",
+// ─── CONFIG ──────────────────────────────────────────────────────────────────
+const PROJECT_COLORS = [
+  "#FF6B6B","#4ECDC4","#A78BFA","#FF9F43","#2ED573",
+  "#45B7D1","#FD79A8","#FDCB6E","#6C5CE7","#00B894",
+];
+
+const DAYS = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"];
+const DAY_ABBR = ["LUN","MAR","MIÉ","JUE","VIE","SÁB","DOM"];
+
+const URGENCY = {
+  urgente:        { label: "Urgente",       color: "#FF6B6B" },
+  importante:     { label: "Importante",    color: "#FFD93D" },
+  "no importante":{ label: "No urgente",    color: "#74B9FF" },
 };
-const STATUS_COLORS = { "activo": COLORS.green, "en pausa": COLORS.amber, "algún día": COLORS.muted };
-const PRIORITY_LABELS = ["Alta", "Media", "Baja"];
-const PRIORITY_COLORS = { Alta: COLORS.red, Media: COLORS.amber, Baja: COLORS.teal };
-function uid() { return Math.random().toString(36).slice(2, 9); }
-const inputStyle = {
-  width: "100%", background: COLORS.surfaceHigh, border: `1px solid ${COLORS.border}`,
-  borderRadius: 8, color: COLORS.text, fontSize: 14, padding: "9px 12px", boxSizing: "border-box",
+
+const PROGRESS_STEPS = [0, 25, 50, 75, 100];
+
+// ─── THEME ──────────────────────────────────────────────────────────────────
+const T = {
+  bg:        "#0f0f1a",
+  panel:     "#161625",
+  card:      "#1e1e30",
+  cardHover: "#242438",
+  border:    "#2a2a45",
+  text:      "#e2e2ee",
+  soft:      "#8888aa",
+  muted:     "#55557a",
 };
 
-// ─── ALGORITMO DE AGENDA (sin IA) ────────────────────────────────────────────
-const AGENDA_COLORS = ["#38BDF8","#4ADE80","#F5A623","#A78BFA","#FB923C","#34D399","#F472B6","#60A5FA"];
-
-function buildAgenda(activeProjects, weekHours) {
-  const DAYS = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"];
-
-  // 1. Distribuir horas por prioridad (50/30/20), normalizado si faltan grupos
-  const grupos = {
-    Alta:  activeProjects.filter(p => p.priority === "Alta"),
-    Media: activeProjects.filter(p => p.priority === "Media"),
-    Baja:  activeProjects.filter(p => p.priority === "Baja"),
-  };
-  const pesos = {
-    Alta:  grupos.Alta.length  ? 0.5 : 0,
-    Media: grupos.Media.length ? 0.3 : 0,
-    Baja:  grupos.Baja.length  ? 0.2 : 0,
-  };
-  const totalPeso = pesos.Alta + pesos.Media + pesos.Baja || 1;
-  Object.keys(pesos).forEach(k => { pesos[k] /= totalPeso; });
-
-  // 2. Horas y color por proyecto
-  const meta = {};
-  activeProjects.forEach((p, i) => {
-    const nGrupo = grupos[p.priority].length || 1;
-    const horas = Math.round(pesos[p.priority] * weekHours / nGrupo * 2) / 2;
-    meta[p.id] = { horas, color: AGENDA_COLORS[i % AGENDA_COLORS.length] };
-  });
-
-  // 3. Construir bloques y distribuirlos en días
-  const dias = DAYS.map(dia => ({ dia, bloques: [] }));
-  const sinCubrir = [];
-  const distribucion = [];
-
-  for (const project of activeProjects) {
-    const { horas: totalHoras, color } = meta[project.id];
-    distribucion.push({ proyecto: project.name, horas: totalHoras, color });
-
-    // Instrucciones especiales en descripción
-    const desc = (project.description || "").toLowerCase();
-    const minsMatch = desc.match(/(\d+)\s*min/);
-    const esDiario = desc.includes("diario") || !!minsMatch;
-
-    // Tamaño de bloque
-    let tamBloque = minsMatch
-      ? Math.max(0.5, Math.round(parseInt(minsMatch[1]) / 60 * 2) / 2)
-      : Math.min(2, Math.max(0.5, Math.round(totalHoras / 5 * 2) / 2));
-
-    const tareasPendientes = project.tasks.filter(t => !t.done);
-    let horasRestantes = totalHoras;
-
-    // Si no hay tareas, bloque genérico
-    const fuente = tareasPendientes.length > 0
-      ? tareasPendientes
-      : [{ text: "Avance general del proyecto" }];
-
-    const bloquesList = [];
-    for (const tarea of fuente) {
-      if (horasRestantes < 0.5) {
-        if (tareasPendientes.length > 0) {
-          sinCubrir.push({ proyecto: project.name, tarea: tarea.text, razon: "No alcanzaron las horas disponibles esta semana" });
-        }
-        continue;
-      }
-      const hrs = Math.min(tamBloque, horasRestantes);
-      bloquesList.push({ proyecto: project.name, tarea: tarea.text, horas: hrs, done: false });
-      horasRestantes -= hrs;
-    }
-
-    // Distribuir bloques: siempre en el día con menos carga (distribución pareja)
-    for (const bloque of bloquesList) {
-      const sorted = dias
-        .map((d, i) => ({ i, total: d.bloques.reduce((a, b) => a + b.horas, 0) }))
-        .sort((a, b) => a.total - b.total);
-      dias[sorted[0].i].bloques.push(bloque);
-    }
-  }
-
-  // 4. Resumen y advertencia
-  const lista = activeProjects.map(p => `${p.name} (${meta[p.id].horas}h)`).join(", ");
-  const resumen = `Semana de ${weekHours}h distribuidas en ${activeProjects.length} proyecto${activeProjects.length !== 1 ? "s" : ""}: ${lista}. Los proyectos de alta prioridad tienen el mayor peso.`;
-  const advertencia = sinCubrir.length > 0
-    ? `${sinCubrir.length} tarea${sinCubrir.length !== 1 ? "s" : ""} no cupo esta semana. Considera reducir proyectos activos o aumentar las horas disponibles.`
-    : null;
-
-  return { generatedAt: new Date().toISOString(), weekHours, resumen, advertencia, sinCubrir, distribucion, dias };
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+function uid()    { return Math.random().toString(36).slice(2, 9); }
+function today()  { return new Date().toISOString().slice(0, 10); }
+function weekStart() {
+  const d = new Date();
+  const diff = d.getDay() === 0 ? -6 : 1 - d.getDay();
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().slice(0, 10);
 }
+const emptyCalendar = () => Object.fromEntries(DAYS.map(d => [d, []]));
 
-// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+// ─── APP ─────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [tab, setTab] = useState("proyectos");
-  const [projects, setProjects] = useState([]);
-  const [weekHours, setWeekHours] = useState(30);
-  const [agenda, setAgenda] = useState(null);
-  const [agendaError, setAgendaError] = useState("");
-  const [showAddProject, setShowAddProject] = useState(false);
-  const [editingProject, setEditingProject] = useState(null);
-  const [newTask, setNewTask] = useState({});
+  const [projects,    setProjects]    = useState([]);
+  const [calendar,    setCalendar]    = useState(emptyCalendar());
+  const [activityLog, setActivityLog] = useState([]);
+  const [showAddProj, setShowAddProj] = useState(false);
+  const [editProj,    setEditProj]    = useState(null);    // project object
+  const [addTaskFor,  setAddTaskFor]  = useState(null);    // projectId
+  const [editingTask, setEditingTask] = useState(null);    // { projectId, taskId }
+  const [dragOver,    setDragOver]    = useState(null);    // day name
+  const [showLog,     setShowLog]     = useState(true);
 
-  // Persistencia en localStorage
+  // ── Persistence ──
   useEffect(() => {
     try {
-      const saved = localStorage.getItem("miSemanaFoco");
+      const saved = localStorage.getItem("semanaFoco_v3");
       if (saved) {
-        const data = JSON.parse(saved);
-        if (data.projects) setProjects(data.projects);
-        if (data.weekHours != null) setWeekHours(data.weekHours);
-        if (data.agenda) setAgenda(data.agenda);
+        const d = JSON.parse(saved);
+        if (d.projects)    setProjects(d.projects);
+        if (d.calendar)    setCalendar(d.calendar);
+        if (d.activityLog) setActivityLog(d.activityLog);
       }
-    } catch (e) {}
+    } catch (_) {}
   }, []);
+
   useEffect(() => {
-    localStorage.setItem("miSemanaFoco", JSON.stringify({ projects, weekHours, agenda }));
-  }, [projects, weekHours, agenda]);
+    localStorage.setItem("semanaFoco_v3", JSON.stringify({ projects, calendar, activityLog }));
+  }, [projects, calendar, activityLog]);
 
-  function saveProject(data) {
-    if (data.id) setProjects(p => p.map(x => x.id === data.id ? data : x));
-    else setProjects(p => [...p, { ...data, id: uid(), tasks: [] }]);
-    setShowAddProject(false); setEditingProject(null);
-  }
-  function deleteProject(id) { setProjects(p => p.filter(x => x.id !== id)); }
-  function addTask(projectId, text) {
-    if (!text.trim()) return;
-    setProjects(p => p.map(x => x.id === projectId ? { ...x, tasks: [...x.tasks, { id: uid(), text, done: false }] } : x));
-    setNewTask(t => ({ ...t, [projectId]: "" }));
-  }
-  function toggleTask(projectId, taskId) {
-    setProjects(p => p.map(x => x.id === projectId
-      ? { ...x, tasks: x.tasks.map(t => t.id === taskId ? { ...t, done: !t.done } : t) } : x));
-  }
-  function deleteTask(projectId, taskId) {
-    setProjects(p => p.map(x => x.id === projectId ? { ...x, tasks: x.tasks.filter(t => t.id !== taskId) } : x));
-  }
-
-  // ── Edit agenda block ──────────────────────────────────────────────────────
-  function toggleBloqueDone(diaIdx, bloqueIdx) {
-    setAgenda(a => {
-      const dias = a.dias.map((d, di) => di !== diaIdx ? d : {
-        ...d, bloques: d.bloques.map((b, bi) => bi !== bloqueIdx ? b : { ...b, done: !b.done })
-      });
-      return { ...a, dias };
-    });
-  }
-  function editBloqueText(diaIdx, bloqueIdx, field, value) {
-    setAgenda(a => {
-      const dias = a.dias.map((d, di) => di !== diaIdx ? d : {
-        ...d, bloques: d.bloques.map((b, bi) => bi !== bloqueIdx ? b : { ...b, [field]: value })
-      });
-      return { ...a, dias };
-    });
-  }
-  function deleteBloque(diaIdx, bloqueIdx) {
-    setAgenda(a => {
-      const dias = a.dias.map((d, di) => di !== diaIdx ? d : {
-        ...d, bloques: d.bloques.filter((_, bi) => bi !== bloqueIdx)
-      });
-      return { ...a, dias };
-    });
-  }
-  function addBloque(diaIdx) {
-    setAgenda(a => {
-      const dias = a.dias.map((d, di) => di !== diaIdx ? d : {
-        ...d, bloques: [...d.bloques, { proyecto: projects[0]?.name || "Proyecto", tarea: "Nueva tarea", horas: 1, done: false, isNew: true }]
-      });
-      return { ...a, dias };
-    });
-  }
-
-  // ── Generador de agenda (sin API) ─────────────────────────────────────────
-  function generateAgenda() {
-    const activeProjects = projects.filter(p => p.status === "activo");
-    if (activeProjects.length === 0) {
-      setAgendaError("No tienes proyectos activos. Agrega al menos uno antes de generar la agenda.");
-      setTab("agenda");
-      return;
+  // ── Live task lookup (always fresh from state) ──
+  function findTask(taskId) {
+    for (const proj of projects) {
+      const t = proj.tasks?.find(t => t.id === taskId);
+      if (t) return { task: t, project: proj };
     }
-    setAgendaError("");
-    setAgenda(buildAgenda(activeProjects, weekHours));
-    setTab("agenda");
+    return null;
   }
 
-  const completedBlocks = agenda ? agenda.dias.flatMap(d => d.bloques).filter(b => b.done).length : 0;
-  const totalBlocks = agenda ? agenda.dias.flatMap(d => d.bloques).length : 0;
+  // Live data for editing modal
+  const editingLive = editingTask && (() => {
+    const proj = projects.find(p => p.id === editingTask.projectId);
+    const task = proj?.tasks?.find(t => t.id === editingTask.taskId);
+    return proj && task ? { project: proj, task } : null;
+  })();
 
+  // ── Activity log ──
+  function logActivity(task, project, action) {
+    setActivityLog(l => [{
+      id: uid(), taskId: task.id, projectId: project.id,
+      taskText: task.text, projectName: project.name, projectColor: project.color,
+      date: today(), progress: task.progress, action,
+    }, ...l]);
+  }
+
+  // ── Projects ──
+  function addProject(name) {
+    const color = PROJECT_COLORS[projects.length % PROJECT_COLORS.length];
+    setProjects(p => [...p, { id: uid(), name, color, tasks: [] }]);
+    setShowAddProj(false);
+  }
+
+  function saveProject(name) {
+    setProjects(p => p.map(x => x.id === editProj.id ? { ...x, name } : x));
+    setEditProj(null);
+  }
+
+  function deleteProject(id) {
+    const proj = projects.find(p => p.id === id);
+    if (proj) {
+      const ids = new Set(proj.tasks.map(t => t.id));
+      setCalendar(cal => Object.fromEntries(DAYS.map(d => [d, cal[d].filter(e => !ids.has(e.taskId))])));
+    }
+    setProjects(p => p.filter(x => x.id !== id));
+  }
+
+  // ── Tasks ──
+  function addTask(projectId, data) {
+    setProjects(p => p.map(x => x.id === projectId
+      ? { ...x, tasks: [...(x.tasks || []), { id: uid(), progress: 0, done: false, completedAt: null, ...data }] }
+      : x));
+    setAddTaskFor(null);
+  }
+
+  function saveTask(projectId, taskId, data) {
+    setProjects(p => p.map(x => x.id === projectId
+      ? { ...x, tasks: x.tasks.map(t => t.id === taskId ? { ...t, ...data } : t) }
+      : x));
+    setEditingTask(null);
+  }
+
+  function deleteTask(projectId, taskId) {
+    setCalendar(cal => Object.fromEntries(DAYS.map(d => [d, cal[d].filter(e => e.taskId !== taskId)])));
+    setProjects(p => p.map(x => x.id === projectId
+      ? { ...x, tasks: x.tasks.filter(t => t.id !== taskId) }
+      : x));
+  }
+
+  function setTaskProgress(projectId, taskId, progress) {
+    const found = findTask(taskId);
+    if (!found) return;
+    const { task, project } = found;
+    const done = progress === 100;
+    setProjects(p => p.map(x => x.id === projectId
+      ? { ...x, tasks: x.tasks.map(t => t.id === taskId
+          ? { ...t, progress, done, completedAt: done ? new Date().toISOString() : null }
+          : t) }
+      : x));
+    if (done && !task.done) logActivity({ ...task, progress }, project, "completed");
+    else if (progress > 0 && progress > (task.progress || 0) && !done)
+      logActivity({ ...task, progress }, project, "progress_update");
+  }
+
+  function toggleTaskDone(projectId, taskId) {
+    const found = findTask(taskId);
+    if (!found) return;
+    const { task, project } = found;
+    const newDone = !task.done;
+    const progress = newDone ? 100 : task.progress === 100 ? 75 : (task.progress || 0);
+    setProjects(p => p.map(x => x.id === projectId
+      ? { ...x, tasks: x.tasks.map(t => t.id === taskId
+          ? { ...t, done: newDone, progress, completedAt: newDone ? new Date().toISOString() : null }
+          : t) }
+      : x));
+    if (newDone) logActivity({ ...task, progress: 100 }, project, "completed");
+  }
+
+  // ── Calendar ──
+  function dropOnDay(day, taskId, projectId) {
+    if (calendar[day]?.some(e => e.taskId === taskId)) return;
+    setCalendar(cal => ({ ...cal, [day]: [...(cal[day] || []), { calId: uid(), taskId, projectId, done: false }] }));
+  }
+
+  function removeFromCal(day, calId) {
+    setCalendar(cal => ({ ...cal, [day]: cal[day].filter(e => e.calId !== calId) }));
+  }
+
+  function toggleCalDone(day, calId) {
+    const entry = calendar[day]?.find(e => e.calId === calId);
+    if (!entry) return;
+    const newDone = !entry.done;
+    setCalendar(cal => ({ ...cal, [day]: cal[day].map(e => e.calId === calId ? { ...e, done: newDone } : e) }));
+    if (newDone) {
+      const found = findTask(entry.taskId);
+      if (found && !found.task.done) setTaskProgress(entry.projectId, entry.taskId, 100);
+    }
+  }
+
+  function getScheduledDays(taskId) {
+    return DAYS.filter(d => calendar[d]?.some(e => e.taskId === taskId));
+  }
+
+  // ── Stats ──
+  const todayStr    = today();
+  const wkStart     = weekStart();
+  const totalTasks  = projects.reduce((a, p) => a + (p.tasks?.length || 0), 0);
+  const doneTasks   = projects.reduce((a, p) => a + (p.tasks?.filter(t => t.done).length || 0), 0);
+
+  const todayDone = [...new Map(
+    activityLog.filter(e => e.date === todayStr && e.action === "completed").map(e => [e.taskId, e])
+  ).values()];
+
+  const weekDone = [...new Map(
+    activityLog.filter(e => e.date >= wkStart && e.action === "completed").map(e => [e.taskId, e])
+  ).values()];
+
+  const weekByProject = weekDone.reduce((acc, e) => {
+    if (!acc[e.projectName]) acc[e.projectName] = { count: 0, color: e.projectColor };
+    acc[e.projectName].count++;
+    return acc;
+  }, {});
+
+  // ── Render ──
   return (
-    <div style={{ background: COLORS.bg, minHeight: "100vh", color: COLORS.text, fontFamily: "'Inter', system-ui, sans-serif" }}>
-      <div style={{ borderBottom: `1px solid ${COLORS.border}`, padding: "20px 24px 0" }}>
-        <div style={{ maxWidth: 920, margin: "0 auto" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
-            <div>
-              <div style={{ fontSize: 11, letterSpacing: "0.15em", color: COLORS.amber, textTransform: "uppercase", marginBottom: 4 }}>Sistema de proyectos</div>
-              <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Mi semana con foco</h1>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              {agenda && totalBlocks > 0 && (
-                <div style={{ fontSize: 12, color: COLORS.textSoft, background: COLORS.surfaceHigh, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "4px 12px" }}>
-                  ✓ {completedBlocks}/{totalBlocks} bloques
-                </div>
-              )}
-              <span style={{ fontSize: 12, color: COLORS.muted }}>Horas/semana</span>
-              <input type="number" value={weekHours} onChange={e => setWeekHours(Number(e.target.value))} min={1} max={80}
-                style={{ width: 56, background: COLORS.surfaceHigh, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.text, fontSize: 15, fontWeight: 700, textAlign: "center", padding: "4px 8px" }} />
+    <div style={{ background: T.bg, height: "100vh", color: T.text, fontFamily: "'Inter', system-ui, sans-serif", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+
+      {/* HEADER */}
+      <header style={{ padding: "13px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", background: T.panel, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 18 }}>✨</span>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 16, letterSpacing: "-0.02em" }}>Mi Semana con Foco</div>
+            <div style={{ fontSize: 11, color: T.soft }}>
+              {totalTasks > 0
+                ? `${doneTasks} de ${totalTasks} tareas completadas`
+                : "Empieza creando un proyecto"}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 0 }}>
-            {[["proyectos", "Proyectos"], ["agenda", "Agenda"], ["semana", "Vista semana"]].map(([key, label]) => (
-              <button key={key} onClick={() => setTab(key)}
-                style={{ background: "none", border: "none", borderBottom: tab === key ? `2px solid ${COLORS.amber}` : "2px solid transparent", color: tab === key ? COLORS.amber : COLORS.muted, fontSize: 13, fontWeight: 600, padding: "8px 18px", cursor: "pointer" }}>
-                {label}
-              </button>
+        </div>
+        <button onClick={() => setShowAddProj(true)} style={btnPrimary}>+ Nuevo proyecto</button>
+      </header>
+
+      {/* BODY */}
+      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+
+        {/* ── LEFT PANEL ── */}
+        <div style={{ width: 290, flexShrink: 0, borderRight: `1px solid ${T.border}`, display: "flex", flexDirection: "column", background: T.panel }}>
+
+          {/* Task list – scrollable */}
+          <div style={{ flex: 1, overflowY: "auto", padding: "14px 10px" }}>
+            <div style={sectionLabel}>Proyectos y Tareas</div>
+
+            {projects.length === 0 && (
+              <div style={{ textAlign: "center", padding: "36px 12px", color: T.muted }}>
+                <div style={{ fontSize: 26, marginBottom: 10 }}>🌱</div>
+                <div style={{ fontSize: 12, lineHeight: 1.6, color: T.soft }}>
+                  Crea tu primer proyecto<br />y empieza a planificar
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {projects.map(project => (
+                <ProjectSection
+                  key={project.id}
+                  project={project}
+                  getScheduledDays={getScheduledDays}
+                  onAddTask={() => setAddTaskFor(project.id)}
+                  onEditProject={() => setEditProj(project)}
+                  onDeleteProject={() => deleteProject(project.id)}
+                  onEditTask={(taskId) => setEditingTask({ projectId: project.id, taskId })}
+                  onDeleteTask={(taskId) => deleteTask(project.id, taskId)}
+                  onToggleDone={(taskId) => toggleTaskDone(project.id, taskId)}
+                  onSetProgress={(taskId, p) => setTaskProgress(project.id, taskId, p)}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* ── MI AVANCE – fixed bottom ── */}
+          <div style={{ borderTop: `1px solid ${T.border}`, flexShrink: 0 }}>
+            <button
+              onClick={() => setShowLog(s => !s)}
+              style={{ width: "100%", background: "none", border: "none", padding: "10px 14px", display: "flex", alignItems: "center", gap: 8, cursor: "pointer", color: T.text }}
+            >
+              <span style={{ fontSize: 14 }}>🏆</span>
+              <span style={{ fontWeight: 700, fontSize: 12, flex: 1, textAlign: "left" }}>Mi avance</span>
+              <span style={{ fontSize: 10, color: T.soft }}>{showLog ? "▼" : "▶"}</span>
+            </button>
+
+            {showLog && (
+              <div style={{ padding: "0 14px 14px", maxHeight: 230, overflowY: "auto" }}>
+
+                {/* Today */}
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ ...sectionLabel, marginBottom: 7 }}>
+                    Hoy — {todayDone.length} {todayDone.length === 1 ? "completada" : "completadas"}
+                  </div>
+                  {todayDone.length === 0
+                    ? <div style={{ fontSize: 11, color: T.muted, fontStyle: "italic" }}>¡Vamos! El primer ✓ está esperando 💪</div>
+                    : todayDone.map(e => (
+                        <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
+                          <div style={{ width: 6, height: 6, borderRadius: "50%", background: e.projectColor, flexShrink: 0 }} />
+                          <div style={{ fontSize: 11, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.taskText}</div>
+                        </div>
+                      ))
+                  }
+                </div>
+
+                {/* This week */}
+                <div>
+                  <div style={{ ...sectionLabel, marginBottom: 7 }}>
+                    Esta semana — {weekDone.length} {weekDone.length === 1 ? "completada" : "completadas"}
+                  </div>
+                  {weekDone.length === 0
+                    ? <div style={{ fontSize: 11, color: T.muted, fontStyle: "italic" }}>Aquí verás tu progreso</div>
+                    : Object.entries(weekByProject).map(([name, { count, color }]) => (
+                        <div key={name} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
+                          <div style={{ width: 6, height: 6, borderRadius: "50%", background: color, flexShrink: 0 }} />
+                          <div style={{ fontSize: 11, color: T.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
+                          <div style={{ fontSize: 10, color: color, fontWeight: 700, flexShrink: 0 }}>{count} ✓</div>
+                        </div>
+                      ))
+                  }
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── RIGHT PANEL – Calendar ── */}
+        <div style={{ flex: 1, overflowX: "auto", overflowY: "auto", padding: "14px 14px", background: T.bg }}>
+          <div style={sectionLabel}>Semana — arrastra las tareas aquí</div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(130px, 1fr))", gap: 8, minWidth: 910 }}>
+            {DAYS.map((day, i) => (
+              <DayColumn
+                key={day}
+                day={day}
+                dayAbbr={DAY_ABBR[i]}
+                entries={calendar[day] || []}
+                isDragOver={dragOver === day}
+                onDragOver={e => { e.preventDefault(); setDragOver(day); }}
+                onDragLeave={() => setDragOver(null)}
+                onDrop={e => {
+                  e.preventDefault();
+                  setDragOver(null);
+                  const taskId    = e.dataTransfer.getData("taskId");
+                  const projectId = e.dataTransfer.getData("projectId");
+                  if (taskId && projectId) dropOnDay(day, taskId, projectId);
+                }}
+                findTask={findTask}
+                onRemove={calId => removeFromCal(day, calId)}
+                onToggleDone={calId => toggleCalDone(day, calId)}
+              />
             ))}
           </div>
         </div>
       </div>
 
-      <div style={{ maxWidth: 920, margin: "0 auto", padding: "24px" }}>
+      {/* ── MODALS ── */}
+      {showAddProj && (
+        <ProjectModal onSave={addProject} onClose={() => setShowAddProj(false)} />
+      )}
+      {editProj && (
+        <ProjectModal project={editProj} onSave={saveProject} onClose={() => setEditProj(null)} />
+      )}
+      {addTaskFor && (
+        <TaskModal onSave={data => addTask(addTaskFor, data)} onClose={() => setAddTaskFor(null)} />
+      )}
+      {editingTask && editingLive && (
+        <TaskModal
+          task={editingLive.task}
+          onSave={data => saveTask(editingTask.projectId, editingTask.taskId, data)}
+          onClose={() => setEditingTask(null)}
+          onSetProgress={p => setTaskProgress(editingTask.projectId, editingTask.taskId, p)}
+        />
+      )}
+    </div>
+  );
+}
 
-        {/* ── PROYECTOS ── */}
-        {tab === "proyectos" && (
-          <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
-              <div style={{ fontSize: 13, color: COLORS.textSoft }}>
-                {projects.filter(p => p.status === "activo").length} activos · {projects.filter(p => p.status === "en pausa").length} en pausa · {projects.filter(p => p.status === "algún día").length} algún día
-              </div>
-              <div style={{ display: "flex", gap: 10 }}>
-                <button onClick={generateAgenda} style={{ background: COLORS.amber, color: "#000", border: "none", borderRadius: 8, padding: "8px 18px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>✦ Generar agenda</button>
-                <button onClick={() => setShowAddProject(true)} style={{ background: COLORS.surfaceHigh, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>+ Proyecto</button>
-              </div>
+// ─── PROJECT SECTION ─────────────────────────────────────────────────────────
+function ProjectSection({ project, getScheduledDays, onAddTask, onEditProject, onDeleteProject, onEditTask, onDeleteTask, onToggleDone, onSetProgress }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const pending = project.tasks?.filter(t => !t.done).length || 0;
+  const urgencyOrder = { urgente: 0, importante: 1, "no importante": 2 };
+  const sorted = [...(project.tasks || [])].sort((a, b) => (urgencyOrder[a.urgency] ?? 2) - (urgencyOrder[b.urgency] ?? 2));
+
+  return (
+    <div style={{ borderRadius: 10, overflow: "hidden", border: `1px solid ${T.border}` }}>
+      {/* Header */}
+      <div style={{ padding: "9px 10px", background: T.card, display: "flex", alignItems: "center", gap: 7, borderLeft: `3px solid ${project.color}` }}>
+        <button onClick={() => setCollapsed(c => !c)} style={{ background: "none", border: "none", cursor: "pointer", color: T.muted, fontSize: 10, padding: 0, lineHeight: 1 }}>
+          {collapsed ? "▶" : "▼"}
+        </button>
+        <div style={{ flex: 1, fontWeight: 700, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{project.name}</div>
+        <span style={{ fontSize: 10, color: T.muted, flexShrink: 0 }}>{pending}</span>
+        <button onClick={onAddTask} style={{ background: `${project.color}20`, border: `1px solid ${project.color}40`, borderRadius: 5, color: project.color, fontSize: 11, fontWeight: 700, padding: "1px 7px", cursor: "pointer" }}>+</button>
+        <button onClick={onEditProject} style={{ background: "none", border: "none", color: T.muted, fontSize: 10, cursor: "pointer", padding: "1px 3px" }}>✎</button>
+        <button onClick={onDeleteProject} style={{ background: "none", border: "none", color: "#FF6B6B55", fontSize: 10, cursor: "pointer", padding: "1px 3px" }}>✕</button>
+      </div>
+
+      {!collapsed && (
+        <div style={{ background: T.panel }}>
+          {sorted.length === 0 && (
+            <div style={{ padding: "11px 12px", fontSize: 11, color: T.muted, textAlign: "center" }}>
+              Presiona + para agregar tareas
             </div>
-            {projects.length === 0 && (
-              <div style={{ textAlign: "center", padding: "60px 20px", color: COLORS.muted }}>
-                <div style={{ fontSize: 36, marginBottom: 12 }}>📋</div>
-                <div style={{ fontSize: 15, marginBottom: 6 }}>Sin proyectos aún</div>
-                <div style={{ fontSize: 13 }}>Agrega tu primer proyecto para empezar</div>
-              </div>
+          )}
+          {sorted.map(task => (
+            <TaskCard
+              key={task.id}
+              task={task}
+              project={project}
+              scheduledDays={getScheduledDays(task.id)}
+              onEdit={() => onEditTask(task.id)}
+              onDelete={() => onDeleteTask(task.id)}
+              onToggleDone={() => onToggleDone(task.id)}
+              onSetProgress={p => onSetProgress(task.id, p)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── TASK CARD ────────────────────────────────────────────────────────────────
+function TaskCard({ task, project, scheduledDays, onEdit, onDelete, onToggleDone, onSetProgress }) {
+  const urg = URGENCY[task.urgency] || URGENCY["no importante"];
+  const progress = task.progress || 0;
+
+  function advanceProgress(e) {
+    e.stopPropagation();
+    const idx = PROGRESS_STEPS.indexOf(progress);
+    const next = PROGRESS_STEPS[Math.min(idx + 1, PROGRESS_STEPS.length - 1)];
+    if (next !== progress) onSetProgress(next);
+  }
+
+  return (
+    <div
+      draggable
+      onDragStart={e => {
+        e.dataTransfer.setData("taskId",    task.id);
+        e.dataTransfer.setData("projectId", project.id);
+      }}
+      style={{ borderLeft: `3px solid ${project.color}`, background: T.card, opacity: task.done ? 0.5 : 1, cursor: "grab", userSelect: "none" }}
+      onMouseEnter={e => !task.done && (e.currentTarget.style.background = T.cardHover)}
+      onMouseLeave={e => (e.currentTarget.style.background = T.card)}
+    >
+      <div style={{ padding: "8px 10px", display: "flex", alignItems: "flex-start", gap: 7 }}>
+        {/* Checkbox */}
+        <input
+          type="checkbox"
+          checked={task.done}
+          onChange={onToggleDone}
+          onClick={e => e.stopPropagation()}
+          style={{ accentColor: project.color, flexShrink: 0, marginTop: 2, width: 13, height: 13 }}
+        />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 500, color: task.done ? T.muted : T.text, textDecoration: task.done ? "line-through" : "none", lineHeight: 1.4, marginBottom: 4 }}>
+            {task.text}
+          </div>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontSize: 9, fontWeight: 700, color: urg.color, background: `${urg.color}18`, borderRadius: 4, padding: "1px 5px" }}>
+              {urg.label}
+            </span>
+            {task.estimatedTime && (
+              <span style={{ fontSize: 9, color: T.soft }}>⏱ {task.estimatedTime}h</span>
             )}
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              {projects.map(project => (
-                <ProjectCard key={project.id} project={project}
-                  onEdit={() => setEditingProject(project)} onDelete={() => deleteProject(project.id)}
-                  onToggleTask={(tid) => toggleTask(project.id, tid)} onDeleteTask={(tid) => deleteTask(project.id, tid)}
-                  onAddTask={(text) => addTask(project.id, text)}
-                  newTaskText={newTask[project.id] || ""} onNewTaskChange={(v) => setNewTask(t => ({ ...t, [project.id]: v }))} />
+            {scheduledDays.map(day => (
+              <span key={day} style={{ fontSize: 9, color: project.color, background: `${project.color}18`, borderRadius: 3, padding: "1px 4px", fontWeight: 600 }}>
+                {day.slice(0, 3)}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 1, flexShrink: 0 }}>
+          <button onClick={onEdit}   style={{ background: "none", border: "none", color: T.muted, fontSize: 10, cursor: "pointer", padding: "2px 3px" }}>✎</button>
+          <button onClick={onDelete} style={{ background: "none", border: "none", color: "#FF6B6B44", fontSize: 10, cursor: "pointer", padding: "2px 3px" }}>✕</button>
+        </div>
+      </div>
+
+      {/* Progress bar — click to advance */}
+      {!task.done && (
+        <div
+          onClick={advanceProgress}
+          title={`Avance: ${progress}% — clic para avanzar`}
+          style={{ height: 4, background: T.border, cursor: "pointer", margin: "0 0 0 0" }}
+        >
+          <div style={{
+            height: "100%",
+            width: `${progress}%`,
+            background: `linear-gradient(90deg, ${project.color}88, ${project.color})`,
+            borderRadius: "0 2px 2px 0",
+            transition: "width 0.3s ease",
+          }} />
+        </div>
+      )}
+      {!task.done && progress > 0 && (
+        <div style={{ textAlign: "right", fontSize: 9, color: T.muted, padding: "2px 8px 4px", lineHeight: 1 }}>
+          {progress}%
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── DAY COLUMN ──────────────────────────────────────────────────────────────
+function DayColumn({ day, dayAbbr, entries, isDragOver, onDragOver, onDragLeave, onDrop, findTask, onRemove, onToggleDone }) {
+  const done  = entries.filter(e => e.done).length;
+  const total = entries.length;
+
+  return (
+    <div
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+      style={{
+        borderRadius: 10,
+        border: isDragOver ? `2px dashed #A78BFA` : `1px solid ${T.border}`,
+        background: isDragOver ? "#A78BFA0c" : T.panel,
+        minHeight: 200,
+        transition: "all 0.15s",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      {/* Day header */}
+      <div style={{ padding: "9px 10px", borderBottom: `1px solid ${T.border}`, background: T.card, borderRadius: "9px 9px 0 0" }}>
+        <div style={{ fontWeight: 800, fontSize: 11, letterSpacing: "0.06em", color: T.text }}>{dayAbbr}</div>
+        <div style={{ fontSize: 9, color: T.muted, marginTop: 1 }}>
+          {total === 0 ? "libre" : `${done}/${total} ✓`}
+        </div>
+      </div>
+
+      {/* Entries */}
+      <div style={{ padding: "7px 6px", display: "flex", flexDirection: "column", gap: 5, flex: 1 }}>
+        {entries.map(entry => {
+          const found = findTask(entry.taskId);
+          if (!found) return null;
+          return (
+            <CalendarTask
+              key={entry.calId}
+              entry={entry}
+              task={found.task}
+              project={found.project}
+              onRemove={() => onRemove(entry.calId)}
+              onToggleDone={() => onToggleDone(entry.calId)}
+            />
+          );
+        })}
+        {total === 0 && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", flex: 1, color: T.muted, fontSize: 10, opacity: 0.6 }}>
+            Suelta aquí
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── CALENDAR TASK ────────────────────────────────────────────────────────────
+function CalendarTask({ entry, task, project, onRemove, onToggleDone }) {
+  const progress = task.progress || 0;
+  return (
+    <div style={{ borderRadius: 7, background: `${project.color}15`, border: `1px solid ${project.color}30`, padding: "7px 8px", position: "relative", opacity: entry.done ? 0.45 : 1, transition: "opacity 0.2s" }}>
+      <button onClick={onRemove} style={{ position: "absolute", top: 3, right: 3, background: "none", border: "none", color: T.muted, fontSize: 9, cursor: "pointer", padding: "1px 3px", lineHeight: 1 }}>✕</button>
+      <div style={{ paddingRight: 14 }}>
+        <div style={{ fontSize: 9, fontWeight: 700, color: project.color, marginBottom: 2, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+          {project.name}
+        </div>
+        <div
+          onClick={onToggleDone}
+          style={{ fontSize: 11, color: entry.done ? T.muted : T.text, textDecoration: entry.done ? "line-through" : "none", cursor: "pointer", lineHeight: 1.4 }}
+        >
+          {task.text}
+        </div>
+        {task.estimatedTime && (
+          <div style={{ fontSize: 9, color: T.soft, marginTop: 3 }}>⏱ {task.estimatedTime}h</div>
+        )}
+        {progress > 0 && progress < 100 && (
+          <div style={{ marginTop: 5, height: 2, background: T.border, borderRadius: 1 }}>
+            <div style={{ height: "100%", width: `${progress}%`, background: project.color }} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── PROJECT MODAL ────────────────────────────────────────────────────────────
+function ProjectModal({ project, onSave, onClose }) {
+  const [name, setName] = useState(project?.name || "");
+  return (
+    <Modal title={project ? "Editar proyecto" : "Nuevo proyecto"} onClose={onClose}>
+      <input
+        value={name}
+        onChange={e => setName(e.target.value)}
+        onKeyDown={e => e.key === "Enter" && name.trim() && onSave(name.trim())}
+        placeholder="ej: App de finanzas"
+        autoFocus
+        style={{ ...inputSt, marginBottom: 16 }}
+      />
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <button onClick={onClose} style={btnSec}>Cancelar</button>
+        <button onClick={() => name.trim() && onSave(name.trim())} style={btnPrimary}>
+          {project ? "Guardar" : "Crear proyecto"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── TASK MODAL ──────────────────────────────────────────────────────────────
+function TaskModal({ task, onSave, onClose, onSetProgress }) {
+  const [form, setForm] = useState({
+    text:          task?.text          || "",
+    urgency:       task?.urgency       || "importante",
+    estimatedTime: task?.estimatedTime || "",
+  });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const currentProgress = task?.progress || 0;
+
+  return (
+    <Modal title={task ? "Editar tarea" : "Nueva tarea"} onClose={onClose}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {/* Text */}
+        <div>
+          <label style={labelSt}>¿Qué hay que hacer?</label>
+          <input value={form.text} onChange={e => set("text", e.target.value)} placeholder="Descripción de la tarea" autoFocus style={inputSt} />
+        </div>
+
+        {/* Urgency */}
+        <div>
+          <label style={labelSt}>Nivel de urgencia</label>
+          <div style={{ display: "flex", gap: 6 }}>
+            {Object.entries(URGENCY).map(([key, cfg]) => (
+              <button
+                key={key}
+                onClick={() => set("urgency", key)}
+                style={{
+                  flex: 1, padding: "7px 4px", borderRadius: 7, cursor: "pointer", transition: "all 0.15s",
+                  border:      form.urgency === key ? `2px solid ${cfg.color}` : `1px solid ${T.border}`,
+                  background:  form.urgency === key ? `${cfg.color}18`         : T.card,
+                  color:       form.urgency === key ? cfg.color                 : T.soft,
+                  fontSize: 10, fontWeight: form.urgency === key ? 700 : 400,
+                }}
+              >
+                {cfg.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Time */}
+        <div>
+          <label style={labelSt}>Tiempo estimado (horas, opcional)</label>
+          <input
+            type="number" min={0.5} step={0.5}
+            value={form.estimatedTime}
+            onChange={e => set("estimatedTime", e.target.value ? Number(e.target.value) : "")}
+            placeholder="ej: 1.5"
+            style={{ ...inputSt, width: 120 }}
+          />
+        </div>
+
+        {/* Progress (only when editing) */}
+        {task && onSetProgress && (
+          <div>
+            <label style={labelSt}>Marcar avance — {currentProgress}% completada</label>
+            <div style={{ display: "flex", gap: 5 }}>
+              {PROGRESS_STEPS.map(p => (
+                <button
+                  key={p}
+                  onClick={() => onSetProgress(p)}
+                  style={{
+                    flex: 1, padding: "7px 2px", borderRadius: 7, cursor: "pointer", transition: "all 0.15s",
+                    border:     currentProgress === p ? `2px solid #A78BFA` : `1px solid ${T.border}`,
+                    background: currentProgress === p ? "#A78BFA20"          : T.card,
+                    color:      currentProgress === p ? "#A78BFA"            : T.soft,
+                    fontSize: 10, fontWeight: currentProgress === p ? 700 : 400,
+                  }}
+                >
+                  {p === 100 ? "✓ Listo" : `${p}%`}
+                </button>
               ))}
             </div>
           </div>
         )}
 
-        {/* ── AGENDA ── */}
-        {tab === "agenda" && (
-          <div>
-            {agendaError && <div style={{ background: "#2A1A1A", border: `1px solid ${COLORS.red}`, borderRadius: 10, padding: 18, color: COLORS.red, fontSize: 14, marginBottom: 16 }}>{agendaError}</div>}
-            {!agenda && (
-              <div style={{ textAlign: "center", padding: "60px 20px", color: COLORS.muted }}>
-                <div style={{ fontSize: 36, marginBottom: 12 }}>✦</div>
-                <div style={{ fontSize: 15, marginBottom: 8 }}>La agenda aparecerá aquí</div>
-                <div style={{ fontSize: 13, marginBottom: 24 }}>Agrega proyectos activos y presiona "Generar agenda"</div>
-                <button onClick={generateAgenda} style={{ background: COLORS.amber, color: "#000", border: "none", borderRadius: 8, padding: "10px 24px", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>✦ Generar agenda</button>
-              </div>
-            )}
-            {agenda && (
-              <AgendaView agenda={agenda} weekHours={weekHours} onRegenerate={generateAgenda}
-                onToggleDone={toggleBloqueDone} onEditBloque={editBloqueText}
-                onDeleteBloque={deleteBloque} onAddBloque={addBloque} projects={projects} />
-            )}
-          </div>
-        )}
-
-        {/* ── SEMANA ── */}
-        {tab === "semana" && <WeekView agenda={agenda} />}
-      </div>
-
-      {(showAddProject || editingProject) && (
-        <ProjectModal project={editingProject} onSave={saveProject} onClose={() => { setShowAddProject(false); setEditingProject(null); }} />
-      )}
-    </div>
-  );
-}
-
-// ─── PROJECT CARD ─────────────────────────────────────────────────────────────
-function ProjectCard({ project, onEdit, onDelete, onToggleTask, onDeleteTask, onAddTask, newTaskText, onNewTaskChange }) {
-  const [expanded, setExpanded] = useState(false);
-  const pendingCount = project.tasks.filter(t => !t.done).length;
-  const doneCount = project.tasks.filter(t => t.done).length;
-  return (
-    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 12, overflow: "hidden" }}>
-      <div style={{ padding: "14px 18px", display: "flex", alignItems: "flex-start", gap: 14 }}>
-        <div style={{ width: 8, height: 8, borderRadius: "50%", background: PRIORITY_COLORS[project.priority], marginTop: 7, flexShrink: 0 }} />
-        <div style={{ flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <span style={{ fontWeight: 700, fontSize: 15 }}>{project.name}</span>
-            <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 20, background: COLORS.surfaceHigh, color: STATUS_COLORS[project.status], border: `1px solid ${STATUS_COLORS[project.status]}40` }}>{project.status}</span>
-            <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 20, background: COLORS.surfaceHigh, color: COLORS.muted }}>{project.type}</span>
-          </div>
-          {project.description && <div style={{ fontSize: 13, color: COLORS.textSoft, marginTop: 4 }}>{project.description}</div>}
-          <div style={{ display: "flex", gap: 12, marginTop: 8, fontSize: 12, color: COLORS.muted, flexWrap: "wrap" }}>
-            <span style={{ color: PRIORITY_COLORS[project.priority] }}>● {project.priority}</span>
-            <span>{project.hoursPerWeek}h/sem</span>
-            <span>{pendingCount} pendientes</span>
-            {doneCount > 0 && <span style={{ color: COLORS.green }}>✓ {doneCount} listas</span>}
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-          <button onClick={() => setExpanded(e => !e)} style={{ background: COLORS.surfaceHigh, border: `1px solid ${COLORS.border}`, borderRadius: 6, color: COLORS.textSoft, fontSize: 12, padding: "4px 10px", cursor: "pointer" }}>
-            {expanded ? "↑" : `↓ (${project.tasks.length})`}
-          </button>
-          <button onClick={onEdit} style={{ background: "none", border: `1px solid ${COLORS.border}`, borderRadius: 6, color: COLORS.muted, fontSize: 12, padding: "4px 8px", cursor: "pointer" }}>✎</button>
-          <button onClick={onDelete} style={{ background: "none", border: `1px solid ${COLORS.border}`, borderRadius: 6, color: COLORS.red, fontSize: 12, padding: "4px 8px", cursor: "pointer" }}>✕</button>
-        </div>
-      </div>
-      {expanded && (
-        <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: "12px 18px 14px" }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
-            {project.tasks.length === 0 && <div style={{ fontSize: 12, color: COLORS.muted }}>Sin tareas aún</div>}
-            {project.tasks.map(task => (
-              <div key={task.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input type="checkbox" checked={task.done} onChange={() => onToggleTask(task.id)} style={{ accentColor: COLORS.green, width: 14, height: 14, flexShrink: 0 }} />
-                <span style={{ fontSize: 13, flex: 1, color: task.done ? COLORS.muted : COLORS.text, textDecoration: task.done ? "line-through" : "none" }}>{task.text}</span>
-                <button onClick={() => onDeleteTask(task.id)} style={{ background: "none", border: "none", color: COLORS.muted, cursor: "pointer", fontSize: 12 }}>✕</button>
-              </div>
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input value={newTaskText} onChange={e => onNewTaskChange(e.target.value)} onKeyDown={e => e.key === "Enter" && onAddTask(newTaskText)}
-              placeholder="Nueva tarea… (Enter)" style={{ flex: 1, background: COLORS.surfaceHigh, border: `1px solid ${COLORS.border}`, borderRadius: 7, color: COLORS.text, fontSize: 13, padding: "7px 12px" }} />
-            <button onClick={() => onAddTask(newTaskText)} style={{ background: COLORS.tealDim, border: `1px solid ${COLORS.teal}40`, borderRadius: 7, color: COLORS.teal, fontSize: 13, padding: "7px 14px", cursor: "pointer", fontWeight: 600 }}>+</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── AGENDA VIEW ──────────────────────────────────────────────────────────────
-function AgendaView({ agenda, weekHours, onRegenerate, onToggleDone, onEditBloque, onDeleteBloque, onAddBloque, projects }) {
-  const [editingBlock, setEditingBlock] = useState(null); // {diaIdx, bloqueIdx}
-
-  return (
-    <div>
-      {/* Summary */}
-      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: "18px 22px", marginBottom: 20 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 11, color: COLORS.amber, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 6 }}>Resumen de la semana</div>
-            <div style={{ fontSize: 15, color: COLORS.text }}>{agenda.resumen}</div>
-            {agenda.advertencia && (
-              <div style={{ marginTop: 10, padding: "8px 12px", background: "#2A1F10", border: `1px solid ${COLORS.amberDim}`, borderRadius: 8, fontSize: 13, color: COLORS.amber }}>⚠ {agenda.advertencia}</div>
-            )}
-          </div>
-          <button onClick={onRegenerate} style={{ background: COLORS.surfaceHigh, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.textSoft, fontSize: 12, padding: "6px 14px", cursor: "pointer" }}>↺ Regenerar</button>
-        </div>
-      </div>
-
-      {/* Lo que NO cupo */}
-      {agenda.sinCubrir && agenda.sinCubrir.length > 0 && (
-        <div style={{ background: "#1A1A2E", border: `1px solid #3A2060`, borderRadius: 12, padding: "14px 18px", marginBottom: 20 }}>
-          <div style={{ fontSize: 11, color: "#A78BFA", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 10 }}>📦 Quedó fuera esta semana</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {agenda.sinCubrir.map((item, i) => (
-              <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                <div style={{ width: 3, background: "#7C3AED", borderRadius: 2, alignSelf: "stretch", minHeight: 16, flexShrink: 0 }} />
-                <div>
-                  <div style={{ fontSize: 11, color: "#A78BFA", marginBottom: 2 }}>{item.proyecto}</div>
-                  <div style={{ fontSize: 13, color: COLORS.text }}>{item.tarea}</div>
-                  <div style={{ fontSize: 11, color: COLORS.muted, marginTop: 2 }}>{item.razon}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Distribución */}
-      {agenda.distribucion && (
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 11, color: COLORS.muted, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.1em" }}>Distribución de energía — {weekHours}h</div>
-          <div style={{ height: 10, borderRadius: 5, overflow: "hidden", display: "flex" }}>
-            {agenda.distribucion.map((d, i) => (
-              <div key={i} title={`${d.proyecto}: ${d.horas}h`} style={{ height: "100%", width: `${(d.horas / weekHours) * 100}%`, background: d.color || COLORS.teal }} />
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: 16, marginTop: 8, flexWrap: "wrap" }}>
-            {agenda.distribucion.map((d, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12 }}>
-                <div style={{ width: 8, height: 8, borderRadius: "50%", background: d.color || COLORS.teal }} />
-                <span style={{ color: COLORS.textSoft }}>{d.proyecto}</span>
-                <span style={{ color: COLORS.text, fontWeight: 600 }}>{d.horas}h</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Días */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {agenda.dias?.map((day, diaIdx) => {
-          const doneBloques = day.bloques.filter(b => b.done).length;
-          return (
-            <div key={diaIdx} style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden" }}>
-              <div style={{ padding: "10px 18px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontWeight: 700, fontSize: 14 }}>{day.dia}</span>
-                  {doneBloques > 0 && <span style={{ fontSize: 11, color: COLORS.green }}>✓ {doneBloques}/{day.bloques.length}</span>}
-                </div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: COLORS.muted }}>{day.bloques.reduce((a, b) => a + (b.horas || 0), 0)}h</span>
-                  <button onClick={() => onAddBloque(diaIdx)}
-                    style={{ background: COLORS.tealDim, border: `1px solid ${COLORS.teal}30`, borderRadius: 6, color: COLORS.teal, fontSize: 11, padding: "3px 8px", cursor: "pointer" }}>+ bloque</button>
-                </div>
-              </div>
-              <div style={{ padding: "10px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
-                {day.bloques.length === 0 && <div style={{ fontSize: 13, color: COLORS.muted }}>Sin bloques — usa "+ bloque" para agregar</div>}
-                {day.bloques.map((bloque, bloqueIdx) => {
-                  const dist = agenda.distribucion?.find(d => d.proyecto === bloque.proyecto);
-                  const color = dist?.color || COLORS.teal;
-                  const isEditing = editingBlock?.diaIdx === diaIdx && editingBlock?.bloqueIdx === bloqueIdx;
-                  return (
-                    <div key={bloqueIdx} style={{ display: "flex", gap: 10, alignItems: "flex-start", opacity: bloque.done ? 0.5 : 1 }}>
-                      {/* Checkbox */}
-                      <input type="checkbox" checked={!!bloque.done} onChange={() => onToggleDone(diaIdx, bloqueIdx)}
-                        style={{ accentColor: COLORS.green, width: 15, height: 15, flexShrink: 0, marginTop: 3 }} />
-                      <div style={{ width: 3, borderRadius: 2, background: color, flexShrink: 0, alignSelf: "stretch", minHeight: 20 }} />
-                      <div style={{ flex: 1 }}>
-                        {isEditing ? (
-                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                            <input value={bloque.proyecto} onChange={e => onEditBloque(diaIdx, bloqueIdx, "proyecto", e.target.value)}
-                              style={{ ...inputStyle, fontSize: 12, padding: "5px 8px" }} placeholder="Proyecto" />
-                            <input value={bloque.tarea} onChange={e => onEditBloque(diaIdx, bloqueIdx, "tarea", e.target.value)}
-                              style={{ ...inputStyle, fontSize: 12, padding: "5px 8px" }} placeholder="Descripción de la tarea" />
-                            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                              <input type="number" value={bloque.horas} onChange={e => onEditBloque(diaIdx, bloqueIdx, "horas", Number(e.target.value))}
-                                min={0.5} max={12} step={0.5} style={{ ...inputStyle, width: 70, fontSize: 12, padding: "5px 8px" }} />
-                              <span style={{ fontSize: 11, color: COLORS.muted }}>horas</span>
-                              <button onClick={() => setEditingBlock(null)} style={{ marginLeft: "auto", background: COLORS.amber, border: "none", borderRadius: 6, color: "#000", fontSize: 11, padding: "4px 12px", cursor: "pointer", fontWeight: 700 }}>Listo</button>
-                            </div>
-                          </div>
-                        ) : (
-                          <>
-                            <div style={{ fontSize: 11, color, marginBottom: 2 }}>{bloque.proyecto} · {bloque.horas}h</div>
-                            <div style={{ fontSize: 13, color: bloque.done ? COLORS.muted : COLORS.text, textDecoration: bloque.done ? "line-through" : "none" }}>{bloque.tarea}</div>
-                          </>
-                        )}
-                      </div>
-                      {!isEditing && (
-                        <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                          <button onClick={() => setEditingBlock({ diaIdx, bloqueIdx })}
-                            style={{ background: "none", border: `1px solid ${COLORS.border}`, borderRadius: 5, color: COLORS.muted, fontSize: 11, padding: "2px 6px", cursor: "pointer" }}>✎</button>
-                          <button onClick={() => onDeleteBloque(diaIdx, bloqueIdx)}
-                            style={{ background: "none", border: `1px solid ${COLORS.border}`, borderRadius: 5, color: COLORS.red, fontSize: 11, padding: "2px 6px", cursor: "pointer" }}>✕</button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ─── WEEK VIEW ─────────────────────────────────────────────────────────────────
-function WeekView({ agenda }) {
-  if (!agenda) return (
-    <div style={{ textAlign: "center", padding: "60px 20px", color: COLORS.muted }}>
-      <div style={{ fontSize: 36, marginBottom: 12 }}>📅</div>
-      <div style={{ fontSize: 15 }}>Genera primero tu agenda para ver la vista de semana</div>
-    </div>
-  );
-  return (
-    <div style={{ overflowX: "auto" }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(110px, 1fr))", gap: 6, minWidth: 700 }}>
-        {agenda.dias?.map((day, i) => {
-          const totalHours = day.bloques?.reduce((a, b) => a + (b.horas || 0), 0) || 0;
-          const done = day.bloques?.filter(b => b.done).length || 0;
-          return (
-            <div key={i} style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, overflow: "hidden" }}>
-              <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}`, background: COLORS.surfaceHigh }}>
-                <div style={{ fontSize: 11, fontWeight: 700 }}>{day.dia.slice(0, 3).toUpperCase()}</div>
-                <div style={{ fontSize: 10, color: COLORS.muted }}>{totalHours}h · {done}/{day.bloques?.length} ✓</div>
-              </div>
-              <div style={{ padding: "8px 10px", display: "flex", flexDirection: "column", gap: 5 }}>
-                {day.bloques?.map((bloque, j) => {
-                  const dist = agenda.distribucion?.find(d => d.proyecto === bloque.proyecto);
-                  const color = dist?.color || COLORS.teal;
-                  return (
-                    <div key={j} style={{ padding: "5px 7px", borderRadius: 5, background: `${color}18`, borderLeft: `2px solid ${color}`, opacity: bloque.done ? 0.4 : 1 }}>
-                      <div style={{ fontSize: 9, color, fontWeight: 700, marginBottom: 1 }}>{bloque.proyecto}</div>
-                      <div style={{ fontSize: 9, color: COLORS.textSoft, lineHeight: 1.3, textDecoration: bloque.done ? "line-through" : "none" }}>{bloque.tarea?.slice(0, 60)}{bloque.tarea?.length > 60 ? "…" : ""}</div>
-                      <div style={{ fontSize: 9, color: COLORS.muted, marginTop: 2 }}>{bloque.horas}h</div>
-                    </div>
-                  );
-                })}
-                {(!day.bloques || day.bloques.length === 0) && <div style={{ fontSize: 10, color: COLORS.muted, textAlign: "center", padding: "8px 0" }}>Descanso</div>}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ─── PROJECT MODAL ─────────────────────────────────────────────────────────────
-function ProjectModal({ project, onSave, onClose }) {
-  const [form, setForm] = useState(project || { name: "", type: "Trabajo / freelance", priority: "Alta", status: "activo", description: "", hoursPerWeek: 5 });
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
-  return (
-    <div style={{ position: "fixed", inset: 0, background: "#000000AA", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20 }}>
-      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: 28, width: "100%", maxWidth: 460 }}>
-        <h2 style={{ margin: "0 0 20px", fontSize: 17, fontWeight: 700 }}>{project ? "Editar proyecto" : "Nuevo proyecto"}</h2>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <Field label="Nombre"><input value={form.name} onChange={e => set("name", e.target.value)} placeholder="ej: App de finanzas" style={inputStyle} /></Field>
-          <Field label="Tipo">
-            <select value={form.type} onChange={e => set("type", e.target.value)} style={inputStyle}>
-              {["Trabajo / freelance", "Negocio / emprendimiento", "Aprendizaje / estudio", "Personal / creativo"].map(t => <option key={t}>{t}</option>)}
-            </select>
-          </Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-            <Field label="Prioridad">
-              <select value={form.priority} onChange={e => set("priority", e.target.value)} style={inputStyle}>
-                {PRIORITY_LABELS.map(p => <option key={p}>{p}</option>)}
-              </select>
-            </Field>
-            <Field label="Estado">
-              <select value={form.status} onChange={e => set("status", e.target.value)} style={inputStyle}>
-                {["activo", "en pausa", "algún día"].map(s => <option key={s}>{s}</option>)}
-              </select>
-            </Field>
-            <Field label="Horas/sem">
-              <input type="number" value={form.hoursPerWeek} onChange={e => set("hoursPerWeek", Number(e.target.value))} min={1} style={inputStyle} />
-            </Field>
-          </div>
-          <Field label="Descripción (opcional)">
-            <textarea value={form.description} onChange={e => set("description", e.target.value)} rows={2} placeholder="¿Qué es este proyecto?" style={{ ...inputStyle, resize: "vertical" }} />
-          </Field>
-        </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 22, justifyContent: "flex-end" }}>
-          <button onClick={onClose} style={{ background: "none", border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.muted, fontSize: 14, padding: "9px 18px", cursor: "pointer" }}>Cancelar</button>
-          <button onClick={() => form.name.trim() && onSave(form)} style={{ background: COLORS.amber, color: "#000", border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, padding: "9px 22px", cursor: "pointer" }}>
-            {project ? "Guardar cambios" : "Crear proyecto"}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+          <button onClick={onClose} style={btnSec}>Cancelar</button>
+          <button onClick={() => form.text.trim() && onSave({ text: form.text.trim(), urgency: form.urgency, estimatedTime: form.estimatedTime || null })} style={btnPrimary}>
+            {task ? "Guardar cambios" : "Agregar tarea"}
           </button>
         </div>
       </div>
+    </Modal>
+  );
+}
+
+// ─── MODAL WRAPPER ────────────────────────────────────────────────────────────
+function Modal({ title, children, onClose }) {
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "#00000099", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 20 }}
+      onClick={e => e.target === e.currentTarget && onClose()}
+    >
+      <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 14, padding: 22, width: "100%", maxWidth: 400, boxShadow: "0 24px 64px #00000077" }}>
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 18 }}>{title}</div>
+        {children}
+      </div>
     </div>
   );
 }
 
-function Field({ label, children }) {
-  return (
-    <div>
-      <label style={{ fontSize: 11, color: COLORS.muted, display: "block", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.08em" }}>{label}</label>
-      {children}
-    </div>
-  );
-}
+// ─── SHARED STYLES ────────────────────────────────────────────────────────────
+const inputSt = {
+  width: "100%", background: T.panel, border: `1px solid ${T.border}`,
+  borderRadius: 8, color: T.text, fontSize: 13, padding: "9px 12px",
+  boxSizing: "border-box", outline: "none", display: "block",
+};
+const btnPrimary = {
+  background: "linear-gradient(135deg, #A78BFA, #818CF8)", border: "none",
+  borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700,
+  padding: "8px 18px", cursor: "pointer",
+};
+const btnSec = {
+  background: "none", border: `1px solid ${T.border}`,
+  borderRadius: 8, color: T.soft, fontSize: 13, padding: "8px 14px", cursor: "pointer",
+};
+const labelSt = {
+  fontSize: 10, color: T.muted, display: "block", marginBottom: 6,
+  textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600,
+};
+const sectionLabel = {
+  fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", color: T.muted,
+  textTransform: "uppercase", marginBottom: 12,
+};
