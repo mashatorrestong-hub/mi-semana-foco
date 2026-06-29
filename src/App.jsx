@@ -10,23 +10,23 @@ const DAYS = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Doming
 const DAY_ABBR = ["LUN","MAR","MIÉ","JUE","VIE","SÁB","DOM"];
 
 const URGENCY = {
-  urgente:        { label: "Urgente",       color: "#FF6B6B" },
-  importante:     { label: "Importante",    color: "#FFD93D" },
-  "no importante":{ label: "No urgente",    color: "#74B9FF" },
+  urgente:        { label: "Urgente",       color: "#E05252" },
+  importante:     { label: "Importante",    color: "#D4860A" },
+  "no importante":{ label: "No urgente",    color: "#4A90D9" },
 };
 
 const PROGRESS_STEPS = [0, 25, 50, 75, 100];
 
 // ─── THEME ──────────────────────────────────────────────────────────────────
 const T = {
-  bg:        "#0f0f1a",
-  panel:     "#161625",
-  card:      "#1e1e30",
-  cardHover: "#242438",
-  border:    "#2a2a45",
-  text:      "#e2e2ee",
-  soft:      "#8888aa",
-  muted:     "#55557a",
+  bg:        "#FAF7F2",
+  panel:     "#F2EDE4",
+  card:      "#FFFFFF",
+  cardHover: "#FDF9F4",
+  border:    "#E5DDD1",
+  text:      "#2C2820",
+  soft:      "#7A7060",
+  muted:     "#B0A898",
 };
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -511,7 +511,7 @@ function DayColumn({ day, dayAbbr, entries, isDragOver, onDragOver, onDragLeave,
       style={{
         borderRadius: 10,
         border: isDragOver ? `2px dashed #A78BFA` : `1px solid ${T.border}`,
-        background: isDragOver ? "#A78BFA0c" : T.panel,
+        background: isDragOver ? "#A78BFA18" : T.panel,
         minHeight: 200,
         transition: "all 0.15s",
         display: "flex",
@@ -696,7 +696,7 @@ function TaskModal({ task, onSave, onClose, onSetProgress }) {
 function Modal({ title, children, onClose }) {
   return (
     <div
-      style={{ position: "fixed", inset: 0, background: "#00000099", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 20 }}
+      style={{ position: "fixed", inset: 0, background: "#2C282055", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 20 }}
       onClick={e => e.target === e.currentTarget && onClose()}
     >
       <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 14, padding: 22, width: "100%", maxWidth: 400, boxShadow: "0 24px 64px #00000077" }}>
