@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 const COLORS = {
   bg: "#0F1117", surface: "#181C27", surfaceHigh: "#1F2535",
@@ -15,17 +15,119 @@ const inputStyle = {
   borderRadius: 8, color: COLORS.text, fontSize: 14, padding: "9px 12px", boxSizing: "border-box",
 };
 
+// ─── ALGORITMO DE AGENDA (sin IA) ────────────────────────────────────────────
+const AGENDA_COLORS = ["#38BDF8","#4ADE80","#F5A623","#A78BFA","#FB923C","#34D399","#F472B6","#60A5FA"];
+
+function buildAgenda(activeProjects, weekHours) {
+  const DAYS = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"];
+
+  // 1. Distribuir horas por prioridad (50/30/20), normalizado si faltan grupos
+  const grupos = {
+    Alta:  activeProjects.filter(p => p.priority === "Alta"),
+    Media: activeProjects.filter(p => p.priority === "Media"),
+    Baja:  activeProjects.filter(p => p.priority === "Baja"),
+  };
+  const pesos = {
+    Alta:  grupos.Alta.length  ? 0.5 : 0,
+    Media: grupos.Media.length ? 0.3 : 0,
+    Baja:  grupos.Baja.length  ? 0.2 : 0,
+  };
+  const totalPeso = pesos.Alta + pesos.Media + pesos.Baja || 1;
+  Object.keys(pesos).forEach(k => { pesos[k] /= totalPeso; });
+
+  // 2. Horas y color por proyecto
+  const meta = {};
+  activeProjects.forEach((p, i) => {
+    const nGrupo = grupos[p.priority].length || 1;
+    const horas = Math.round(pesos[p.priority] * weekHours / nGrupo * 2) / 2;
+    meta[p.id] = { horas, color: AGENDA_COLORS[i % AGENDA_COLORS.length] };
+  });
+
+  // 3. Construir bloques y distribuirlos en días
+  const dias = DAYS.map(dia => ({ dia, bloques: [] }));
+  const sinCubrir = [];
+  const distribucion = [];
+
+  for (const project of activeProjects) {
+    const { horas: totalHoras, color } = meta[project.id];
+    distribucion.push({ proyecto: project.name, horas: totalHoras, color });
+
+    // Instrucciones especiales en descripción
+    const desc = (project.description || "").toLowerCase();
+    const minsMatch = desc.match(/(\d+)\s*min/);
+    const esDiario = desc.includes("diario") || !!minsMatch;
+
+    // Tamaño de bloque
+    let tamBloque = minsMatch
+      ? Math.max(0.5, Math.round(parseInt(minsMatch[1]) / 60 * 2) / 2)
+      : Math.min(2, Math.max(0.5, Math.round(totalHoras / 5 * 2) / 2));
+
+    const tareasPendientes = project.tasks.filter(t => !t.done);
+    let horasRestantes = totalHoras;
+
+    // Si no hay tareas, bloque genérico
+    const fuente = tareasPendientes.length > 0
+      ? tareasPendientes
+      : [{ text: "Avance general del proyecto" }];
+
+    const bloquesList = [];
+    for (const tarea of fuente) {
+      if (horasRestantes < 0.5) {
+        if (tareasPendientes.length > 0) {
+          sinCubrir.push({ proyecto: project.name, tarea: tarea.text, razon: "No alcanzaron las horas disponibles esta semana" });
+        }
+        continue;
+      }
+      const hrs = Math.min(tamBloque, horasRestantes);
+      bloquesList.push({ proyecto: project.name, tarea: tarea.text, horas: hrs, done: false });
+      horasRestantes -= hrs;
+    }
+
+    // Distribuir bloques: siempre en el día con menos carga (distribución pareja)
+    for (const bloque of bloquesList) {
+      const sorted = dias
+        .map((d, i) => ({ i, total: d.bloques.reduce((a, b) => a + b.horas, 0) }))
+        .sort((a, b) => a.total - b.total);
+      dias[sorted[0].i].bloques.push(bloque);
+    }
+  }
+
+  // 4. Resumen y advertencia
+  const lista = activeProjects.map(p => `${p.name} (${meta[p.id].horas}h)`).join(", ");
+  const resumen = `Semana de ${weekHours}h distribuidas en ${activeProjects.length} proyecto${activeProjects.length !== 1 ? "s" : ""}: ${lista}. Los proyectos de alta prioridad tienen el mayor peso.`;
+  const advertencia = sinCubrir.length > 0
+    ? `${sinCubrir.length} tarea${sinCubrir.length !== 1 ? "s" : ""} no cupo esta semana. Considera reducir proyectos activos o aumentar las horas disponibles.`
+    : null;
+
+  return { generatedAt: new Date().toISOString(), weekHours, resumen, advertencia, sinCubrir, distribucion, dias };
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState("proyectos");
   const [projects, setProjects] = useState([]);
   const [weekHours, setWeekHours] = useState(30);
   const [agenda, setAgenda] = useState(null);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState("");
+  const [agendaError, setAgendaError] = useState("");
   const [showAddProject, setShowAddProject] = useState(false);
   const [editingProject, setEditingProject] = useState(null);
   const [newTask, setNewTask] = useState({});
+
+  // Persistencia en localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("miSemanaFoco");
+      if (saved) {
+        const data = JSON.parse(saved);
+        if (data.projects) setProjects(data.projects);
+        if (data.weekHours != null) setWeekHours(data.weekHours);
+        if (data.agenda) setAgenda(data.agenda);
+      }
+    } catch (e) {}
+  }, []);
+  useEffect(() => {
+    localStorage.setItem("miSemanaFoco", JSON.stringify({ projects, weekHours, agenda }));
+  }, [projects, weekHours, agenda]);
 
   function saveProject(data) {
     if (data.id) setProjects(p => p.map(x => x.id === data.id ? data : x));
@@ -80,53 +182,17 @@ export default function App() {
     });
   }
 
-  // ── AI Agenda ──────────────────────────────────────────────────────────────
-  async function generateAgenda() {
-    setAiLoading(true); setAiError(""); setTab("agenda");
+  // ── Generador de agenda (sin API) ─────────────────────────────────────────
+  function generateAgenda() {
     const activeProjects = projects.filter(p => p.status === "activo");
     if (activeProjects.length === 0) {
-      setAiError("No tienes proyectos activos. Agrega al menos uno antes de generar la agenda.");
-      setAiLoading(false); return;
+      setAgendaError("No tienes proyectos activos. Agrega al menos uno antes de generar la agenda.");
+      setTab("agenda");
+      return;
     }
-    const prompt = `Eres un coach de productividad experto. El usuario tiene ${weekHours} horas disponibles esta semana.
-
-Sus proyectos activos son:
-${activeProjects.map(p => `
-- Proyecto: "${p.name}" (Tipo: ${p.type}, Prioridad: ${p.priority})
-  Descripción: ${p.description || "Sin descripción"}
-  Tareas pendientes: ${p.tasks.filter(t => !t.done).map(t => `"${t.text}"`).join(", ") || "Ninguna registrada"}
-`).join("")}
-
-Genera una agenda semanal realista para los 7 días (Lunes a Domingo) distribuyendo las horas según la prioridad.
-Identifica también qué tareas NO cupieron esta semana.
-
-Responde SOLO con un JSON válido sin markdown ni backticks:
-{
-  "resumen": "frase motivadora y honesta",
-  "advertencia": "advertencia de sobrecarga o proyectos desatendidos, o null",
-  "sinCubrir": [{"proyecto": "Nombre", "tarea": "Tarea que no cupo", "razon": "Por qué no cupo"}],
-  "distribucion": [{"proyecto": "Nombre", "horas": 8, "color": "#hex"}],
-  "dias": [
-    {"dia": "Lunes", "bloques": [{"proyecto": "Nombre", "tarea": "Qué hacer exactamente", "horas": 2}]}
-  ]
-}
-Las horas totales en distribucion deben sumar exactamente ${weekHours}. Sé específico. Asigna colores hex distintos a cada proyecto.`;
-
-    try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1000, messages: [{ role: "user", content: prompt }] })
-      });
-      const data = await res.json();
-      const text = data.content?.map(c => c.text || "").join("") || "";
-      const clean = text.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
-      // add done:false to all bloques
-      parsed.dias = parsed.dias.map(d => ({ ...d, bloques: d.bloques.map(b => ({ ...b, done: false })) }));
-      setAgenda(parsed);
-    } catch (e) { setAiError("No se pudo generar la agenda. Intenta de nuevo."); }
-    setAiLoading(false);
+    setAgendaError("");
+    setAgenda(buildAgenda(activeProjects, weekHours));
+    setTab("agenda");
   }
 
   const completedBlocks = agenda ? agenda.dias.flatMap(d => d.bloques).filter(b => b.done).length : 0;
@@ -153,7 +219,7 @@ Las horas totales en distribucion deben sumar exactamente ${weekHours}. Sé espe
             </div>
           </div>
           <div style={{ display: "flex", gap: 0 }}>
-            {[["proyectos", "Proyectos"], ["agenda", "Agenda IA"], ["semana", "Vista semana"]].map(([key, label]) => (
+            {[["proyectos", "Proyectos"], ["agenda", "Agenda"], ["semana", "Vista semana"]].map(([key, label]) => (
               <button key={key} onClick={() => setTab(key)}
                 style={{ background: "none", border: "none", borderBottom: tab === key ? `2px solid ${COLORS.amber}` : "2px solid transparent", color: tab === key ? COLORS.amber : COLORS.muted, fontSize: 13, fontWeight: 600, padding: "8px 18px", cursor: "pointer" }}>
                 {label}
@@ -173,7 +239,7 @@ Las horas totales en distribucion deben sumar exactamente ${weekHours}. Sé espe
                 {projects.filter(p => p.status === "activo").length} activos · {projects.filter(p => p.status === "en pausa").length} en pausa · {projects.filter(p => p.status === "algún día").length} algún día
               </div>
               <div style={{ display: "flex", gap: 10 }}>
-                <button onClick={generateAgenda} style={{ background: COLORS.amber, color: "#000", border: "none", borderRadius: 8, padding: "8px 18px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>✦ Generar agenda IA</button>
+                <button onClick={generateAgenda} style={{ background: COLORS.amber, color: "#000", border: "none", borderRadius: 8, padding: "8px 18px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>✦ Generar agenda</button>
                 <button onClick={() => setShowAddProject(true)} style={{ background: COLORS.surfaceHigh, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}>+ Proyecto</button>
               </div>
             </div>
@@ -199,23 +265,16 @@ Las horas totales en distribucion deben sumar exactamente ${weekHours}. Sé espe
         {/* ── AGENDA ── */}
         {tab === "agenda" && (
           <div>
-            {aiLoading && (
-              <div style={{ textAlign: "center", padding: "60px 20px" }}>
-                <div style={{ fontSize: 32, marginBottom: 16, display: "inline-block", animation: "spin 1.2s linear infinite" }}>⟳</div>
-                <div style={{ color: COLORS.textSoft, fontSize: 14 }}>Analizando tus proyectos…</div>
-                <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-              </div>
-            )}
-            {aiError && <div style={{ background: "#2A1A1A", border: `1px solid ${COLORS.red}`, borderRadius: 10, padding: 18, color: COLORS.red, fontSize: 14 }}>{aiError}</div>}
-            {!aiLoading && !aiError && !agenda && (
+            {agendaError && <div style={{ background: "#2A1A1A", border: `1px solid ${COLORS.red}`, borderRadius: 10, padding: 18, color: COLORS.red, fontSize: 14, marginBottom: 16 }}>{agendaError}</div>}
+            {!agenda && (
               <div style={{ textAlign: "center", padding: "60px 20px", color: COLORS.muted }}>
                 <div style={{ fontSize: 36, marginBottom: 12 }}>✦</div>
                 <div style={{ fontSize: 15, marginBottom: 8 }}>La agenda aparecerá aquí</div>
-                <div style={{ fontSize: 13, marginBottom: 24 }}>Agrega proyectos activos y presiona "Generar agenda IA"</div>
-                <button onClick={generateAgenda} style={{ background: COLORS.amber, color: "#000", border: "none", borderRadius: 8, padding: "10px 24px", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>Generar agenda IA</button>
+                <div style={{ fontSize: 13, marginBottom: 24 }}>Agrega proyectos activos y presiona "Generar agenda"</div>
+                <button onClick={generateAgenda} style={{ background: COLORS.amber, color: "#000", border: "none", borderRadius: 8, padding: "10px 24px", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>✦ Generar agenda</button>
               </div>
             )}
-            {!aiLoading && agenda && (
+            {agenda && (
               <AgendaView agenda={agenda} weekHours={weekHours} onRegenerate={generateAgenda}
                 onToggleDone={toggleBloqueDone} onEditBloque={editBloqueText}
                 onDeleteBloque={deleteBloque} onAddBloque={addBloque} projects={projects} />
@@ -423,7 +482,7 @@ function WeekView({ agenda }) {
   if (!agenda) return (
     <div style={{ textAlign: "center", padding: "60px 20px", color: COLORS.muted }}>
       <div style={{ fontSize: 36, marginBottom: 12 }}>📅</div>
-      <div style={{ fontSize: 15 }}>Genera primero tu agenda IA para ver la vista de semana</div>
+      <div style={{ fontSize: 15 }}>Genera primero tu agenda para ver la vista de semana</div>
     </div>
   );
   return (
